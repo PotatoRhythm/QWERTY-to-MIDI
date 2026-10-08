@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+buildenv/
+venv/
+.venv/
+
+# PyInstaller output (attach the .exe to a GitHub Release instead)
+build/
+dist/
+
+# Per-user settings, generated on first run
+key_bindings.json
+
+# Third-party installers (link to them instead of redistributing)
+loopMIDISetup.exe
+*.bak
