@@ -48,6 +48,8 @@ active_modifier = None
 binding_buttons = {}
 binding_styles = {}
 binding_listening_styles = {}
+# The popup with the rebind buttons; only exists while it's open
+hotkeys_window = None
 
 def vk_to_char(vk):
     # The unshifted character a virtual key types on the current keyboard layout (e.g. 191 -> "/")
@@ -454,8 +456,9 @@ def cancel_rebind():
         rebind_listener.stop()
         rebind_listener = None
 
-    root.unbind("<Button-1>")
-    root.unbind("<FocusOut>")
+    if hotkeys_window is not None:
+        hotkeys_window.unbind("<Button-1>")
+        hotkeys_window.unbind("<FocusOut>")
 
     if midi_mode:
         start_main_listener()
@@ -473,6 +476,7 @@ def finish_rebind(action, keybind):
         key_bindings[action] = keybind
         save_key_bindings()
         refresh_hotkeys()
+        update_toggle_button()
 
     cancel_rebind()
 
@@ -500,8 +504,8 @@ def start_rebind(action):
             parent = getattr(parent, "master", None)
         cancel_rebind()
 
-    root.bind("<Button-1>", on_click_outside)
-    root.bind("<FocusOut>", lambda e: cancel_rebind())
+    hotkeys_window.bind("<Button-1>", on_click_outside)
+    hotkeys_window.bind("<FocusOut>", lambda e: cancel_rebind())
 
     def _on_press_rebind(key):
         global active_modifier
@@ -530,6 +534,7 @@ def reset_bindings():
     key_bindings = default_key_bindings.copy()
     save_key_bindings()
     refresh_hotkeys()
+    update_toggle_button()
     for action in binding_buttons:
         update_binding_button(action)
 
@@ -678,14 +683,12 @@ small_font = ctk.CTkFont(size=12)
 key_font = ctk.CTkFont(size=13, weight="bold")
 
 content = ctk.CTkFrame(root, fg_color="transparent")
-content.pack(padx=20, pady=(12, 20))
+content.pack(padx=20, pady=(12, 16))
 
-LEFT, RIGHT = 0, 2
-
-def section_heading(row, column, text):
+def section_heading(row, text, parent=content, space_above=18, space_below=6):
     # More space above a heading than below it, except for the first row
-    frame = ctk.CTkFrame(content, fg_color="transparent")
-    frame.grid(row=row, column=column, sticky="ew", pady=(0 if row == 0 else 18, 6))
+    frame = ctk.CTkFrame(parent, fg_color="transparent")
+    frame.grid(row=row, column=0, sticky="ew", pady=(0 if row == 0 else space_above, space_below))
     ctk.CTkLabel(frame, text=text, font=heading_font, text_color=TEXT, height=30).pack(side="left")
     return frame
 
@@ -707,14 +710,13 @@ def styled_slider(parent, **kwargs):
         button_color=MAIN_GREEN, button_hover_color=MAIN_GREEN_HOVER, **kwargs
     )
 
-divider = ctk.CTkFrame(content, width=2, corner_radius=0, border_width=0, fg_color=DIVIDER)
-divider.grid(row=0, column=1, rowspan=6, sticky="ns", padx=18, pady=(4, 0))
+content.grid_columnconfigure(0, minsize=320)
 
 # ---------- MIDI Port ----------
-section_heading(0, LEFT, "MIDI Port")
+port_heading = section_heading(0, "MIDI Port")
 
 port_row = ctk.CTkFrame(content, fg_color="transparent")
-port_row.grid(row=1, column=LEFT, sticky="ew")
+port_row.grid(row=1, column=0, sticky="ew")
 
 midi_var = tk.StringVar(value=available_ports[0] if available_ports else NO_PORTS)
 midi_dropdown = styled_dropdown(
@@ -727,19 +729,18 @@ refresh_ports_btn = ctk.CTkButton(port_row, text="⟳", width=30, height=30, fon
                                   command=refresh_midi_ports, **SECONDARY_STYLE)
 refresh_ports_btn.pack(side="left", padx=(6, 0))
 
-# ---------- Notes (mini keyboard) ----------
-section_heading(2, LEFT, "Notes")
-
+# ---------- Hotkeys popup ----------
 WHITE_NOTES = ["C", "D", "E", "F", "G", "A", "B", "C High"]
 # Black key -> index of the white key to its left
 BLACK_NOTES = {"C#": 0, "D#": 1, "F#": 3, "G#": 4, "A#": 5}
 NOTE_DISPLAY_NAMES = {"C High": "High C"}
 
-piano = ctk.CTkFrame(content, fg_color="transparent")
-piano.grid(row=3, column=LEFT, sticky="new")
-# Each white key spans two grid columns, so black keys can sit halfway between them
-for c in range(len(WHITE_NOTES) * 2):
-    piano.grid_columnconfigure(c, weight=1, uniform="piano")
+control_pairs = [
+    ("Octave Down", "Octave Up"),
+    ("Volume Down", "Volume Up"),
+    ("Sustain", "Reset Volume"),
+    ("MIDI Toggle", None),
+]
 
 def make_binding_button(parent, action, style, listening_style, **kwargs):
     btn = ctk.CTkButton(parent, text=format_key(key_bindings[action]), font=key_font,
@@ -749,42 +750,79 @@ def make_binding_button(parent, action, style, listening_style, **kwargs):
     binding_listening_styles[action] = listening_style
     return btn
 
-for note, left_index in BLACK_NOTES.items():
-    column = left_index * 2 + 1
-    field_label(piano, note).grid(row=0, column=column, columnspan=2)
-    make_binding_button(piano, note, BLACK_KEY_STYLE, BLACK_KEY_LISTENING, width=34, height=36, corner_radius=6) \
-        .grid(row=1, column=column, columnspan=2, padx=2, pady=(0, 4))
+def build_hotkeys_content(parent):
+    section_heading(0, "Notes", parent=parent)
 
-for i, note in enumerate(WHITE_NOTES):
-    make_binding_button(piano, note, WHITE_KEY_STYLE, WHITE_KEY_LISTENING, width=34, height=40, corner_radius=6) \
-        .grid(row=2, column=i * 2, columnspan=2, padx=2)
-    field_label(piano, NOTE_DISPLAY_NAMES.get(note, note)).grid(row=3, column=i * 2, columnspan=2)
+    # ----- Notes (mini keyboard) -----
+    piano = ctk.CTkFrame(parent, fg_color="transparent")
+    piano.grid(row=1, column=0, sticky="new")
+    # Each white key spans two grid columns, so black keys can sit halfway between them
+    for c in range(len(WHITE_NOTES) * 2):
+        piano.grid_columnconfigure(c, weight=1, uniform="piano")
 
-# ---------- Controls ----------
-section_heading(4, LEFT, "Controls")
+    for note, left_index in BLACK_NOTES.items():
+        column = left_index * 2 + 1
+        field_label(piano, note).grid(row=0, column=column, columnspan=2)
+        make_binding_button(piano, note, BLACK_KEY_STYLE, BLACK_KEY_LISTENING, width=34, height=36, corner_radius=6) \
+            .grid(row=1, column=column, columnspan=2, padx=2, pady=(0, 4))
 
-controls = ctk.CTkFrame(content, fg_color="transparent")
-controls.grid(row=5, column=LEFT, sticky="new")
-controls.grid_columnconfigure((1, 3), weight=1, uniform="keys")
+    for i, note in enumerate(WHITE_NOTES):
+        make_binding_button(piano, note, WHITE_KEY_STYLE, WHITE_KEY_LISTENING, width=34, height=40, corner_radius=6) \
+            .grid(row=2, column=i * 2, columnspan=2, padx=2)
+        field_label(piano, NOTE_DISPLAY_NAMES.get(note, note)).grid(row=3, column=i * 2, columnspan=2)
 
-control_pairs = [
-    ("Octave Down", "Octave Up"),
-    ("Volume Down", "Volume Up"),
-    ("Sustain", "Reset Volume"),
-    ("MIDI Toggle", None),
-]
-for row, pair in enumerate(control_pairs):
-    for slot, action in enumerate(pair):
-        if action is None:
-            continue
-        ctk.CTkLabel(controls, text=action, font=body_font, text_color=LABEL_TEXT, anchor="w") \
-            .grid(row=row, column=slot * 2, sticky="w", padx=(0 if slot == 0 else 14, 8), pady=3)
-        make_binding_button(controls, action, SECONDARY_STYLE, CONTROL_LISTENING, width=48, height=28) \
-            .grid(row=row, column=slot * 2 + 1, sticky="ew", pady=3)
+    # ----- Controls -----
+    section_heading(2, "Controls", parent=parent)
 
-reset_btn = ctk.CTkButton(controls, text="Reset to defaults", font=body_font, height=28,
-                          command=reset_bindings, **SECONDARY_STYLE)
-reset_btn.grid(row=len(control_pairs) - 1, column=2, columnspan=2, sticky="ew", padx=(14, 0), pady=3)
+    controls = ctk.CTkFrame(parent, fg_color="transparent")
+    controls.grid(row=3, column=0, sticky="new")
+    controls.grid_columnconfigure((1, 3), weight=1, uniform="keys")
+
+    for row, pair in enumerate(control_pairs):
+        for slot, action in enumerate(pair):
+            if action is None:
+                continue
+            ctk.CTkLabel(controls, text=action, font=body_font, text_color=LABEL_TEXT, anchor="w") \
+                .grid(row=row, column=slot * 2, sticky="w", padx=(0 if slot == 0 else 14, 8), pady=3)
+            make_binding_button(controls, action, SECONDARY_STYLE, CONTROL_LISTENING, width=48, height=28) \
+                .grid(row=row, column=slot * 2 + 1, sticky="ew", pady=3)
+
+    ctk.CTkButton(controls, text="Reset to defaults", font=body_font, height=28,
+                  command=reset_bindings, **SECONDARY_STYLE) \
+        .grid(row=len(control_pairs) - 1, column=2, columnspan=2, sticky="ew", padx=(14, 0), pady=3)
+
+def open_hotkeys_window():
+    global hotkeys_window
+    if hotkeys_window is not None:
+        hotkeys_window.deiconify()
+        hotkeys_window.lift()
+        hotkeys_window.focus_force()
+        return
+
+    hotkeys_window = ctk.CTkToplevel(root, fg_color=BG)
+    hotkeys_window.title("Hotkeys")
+    hotkeys_window.resizable(False, False)
+    # Stays above the main window
+    hotkeys_window.transient(root)
+    hotkeys_window.protocol("WM_DELETE_WINDOW", close_hotkeys_window)
+
+    frame = ctk.CTkFrame(hotkeys_window, fg_color="transparent")
+    frame.pack(padx=20, pady=(12, 20))
+    build_hotkeys_content(frame)
+
+    # Center over the main window
+    hotkeys_window.update_idletasks()
+    x = root.winfo_rootx() + (root.winfo_width() - hotkeys_window.winfo_reqwidth()) // 2
+    y = root.winfo_rooty() + (root.winfo_height() - hotkeys_window.winfo_reqheight()) // 2
+    tk.Toplevel.wm_geometry(hotkeys_window, f"+{max(0, x)}+{max(0, y)}")
+    hotkeys_window.focus_force()
+
+def close_hotkeys_window():
+    global hotkeys_window
+    cancel_rebind()
+    binding_buttons.clear()
+    hotkeys_window.destroy()
+    hotkeys_window = None
 
 # ---------- Sustain ----------
 def toggle_theme():
@@ -794,12 +832,14 @@ def toggle_theme():
     draw_theme_icon(theme_btn, sun=(mode == "dark"))
     octave_range.draw()
 
-sustain_heading = section_heading(0, RIGHT, "Sustain")
-# Neutral, field-like styling so this setting doesn't compete with the green action buttons
-theme_btn = ctk.CTkButton(sustain_heading, text="", width=30, height=30, corner_radius=6,
-                          fg_color=FIELD, hover_color=DIVIDER, border_width=1, border_color=FIELD_BORDER,
-                          text_color=MUTED_TEXT, command=toggle_theme)
+# Neutral, field-like styling so these don't compete with the green action buttons
+TOOLBAR_STYLE = dict(height=30, corner_radius=6, fg_color=FIELD, hover_color=DIVIDER,
+                     border_width=1, border_color=FIELD_BORDER, text_color=MUTED_TEXT)
+theme_btn = ctk.CTkButton(port_heading, text="", width=30, command=toggle_theme, **TOOLBAR_STYLE)
 theme_btn.pack(side="right")
+hotkeys_btn = ctk.CTkButton(port_heading, text="Hotkeys", width=76, font=small_font,
+                            command=open_hotkeys_window, **TOOLBAR_STYLE)
+hotkeys_btn.pack(side="right", padx=(0, 6))
 draw_theme_icon(theme_btn, sun=True)
 
 def update_sustain_mode(event=None):
@@ -808,16 +848,18 @@ def update_sustain_mode(event=None):
     hold_sustain_active = False
     sustain_mode = sustain_var.get()
 
-sustain_var = tk.StringVar(value=SUSTAIN_TAP)
-sustain_dropdown = styled_dropdown(content, variable=sustain_var, values=[SUSTAIN_TAP, SUSTAIN_HOLD],
-                                   command=update_sustain_mode)
-sustain_dropdown.grid(row=1, column=RIGHT, sticky="ew")
 
 # ---------- Sound ----------
-section_heading(2, RIGHT, "Sound")
+section_heading(2, "Sound", space_above=10, space_below=2)
 
 sound = ctk.CTkFrame(content, fg_color="transparent")
-sound.grid(row=3, column=RIGHT, sticky="new")
+sound.grid(row=3, column=0, sticky="new")
+
+field_label(sound, "Sustain", color=LABEL_TEXT).pack(fill="x", pady=(0, 2))
+sustain_var = tk.StringVar(value=SUSTAIN_TAP)
+sustain_dropdown = styled_dropdown(sound, variable=sustain_var, values=[SUSTAIN_TAP, SUSTAIN_HOLD],
+                                   command=update_sustain_mode)
+sustain_dropdown.pack(fill="x")
 
 def labelled_slider(parent, label, value_text, top_pad):
     header = ctk.CTkFrame(parent, fg_color="transparent")
@@ -832,7 +874,7 @@ def update_note_length(val):
     note_length = float(val)
     note_length_value_label.configure(text=f"{note_length:.2f} s")
 
-note_length_value_label = labelled_slider(sound, "Note length", f"{note_length:.2f} s", top_pad=0)
+note_length_value_label = labelled_slider(sound, "Note length", f"{note_length:.2f} s", top_pad=11)
 note_length_slider = styled_slider(sound, from_=0, to=5, number_of_steps=100, command=update_note_length)
 note_length_slider.set(note_length)
 note_length_slider.pack(fill="x")
@@ -849,7 +891,7 @@ def change_velocity(delta):
 def reset_velocity():
     set_velocity(DEFAULT_VELOCITY)
 
-velocity_value_label = labelled_slider(sound, "Velocity (volume)", str(velocity_value), top_pad=14)
+velocity_value_label = labelled_slider(sound, "Velocity (volume)", str(velocity_value), top_pad=7)
 velocity_slider = styled_slider(sound, from_=1, to=127, number_of_steps=126, command=set_velocity)
 velocity_slider.set(velocity_value)
 velocity_slider.pack(fill="x")
@@ -865,7 +907,7 @@ def update_transpose(val):
     transpose_amount = int(round(float(val)))
     transpose_value_label.configure(text=format_transpose(transpose_amount))
 
-transpose_value_label = labelled_slider(sound, "Transpose", format_transpose(transpose_amount), top_pad=14)
+transpose_value_label = labelled_slider(sound, "Transpose", format_transpose(transpose_amount), top_pad=7)
 transpose_slider = styled_slider(sound, from_=-12, to=12, number_of_steps=24, command=update_transpose)
 transpose_slider.set(transpose_amount)
 transpose_slider.pack(fill="x")
@@ -916,7 +958,7 @@ class OctaveRangeSelector:
     """
     LOWEST, HIGHEST = -4, 4
     CELL_COUNT = HIGHEST - LOWEST + 1
-    HEIGHT = 38
+    HEIGHT = 30
     # Room above, below and beside the cells for the handles
     MARGIN = 4
     # How far (in unscaled pixels) from a handle a press still grabs it
@@ -1051,21 +1093,19 @@ class OctaveRangeSelector:
         self.on_motion(event)
         self.draw()
 
-octave_heading = section_heading(4, RIGHT, "Octave")
+octave_heading = section_heading(4, "Octave", space_above=10, space_below=4)
 octave_range_value_label = ctk.CTkLabel(octave_heading, text=f"{format_signed(min_octave)} to {format_signed(max_octave)}",
                                         font=small_font, text_color=MUTED_TEXT, height=30)
 octave_range_value_label.pack(side="right")
 
 octave_section = ctk.CTkFrame(content, fg_color="transparent")
-# Fills the row so the octave section ends level with the Controls section
-octave_section.grid(row=5, column=RIGHT, sticky="nsew")
+octave_section.grid(row=5, column=0, sticky="ew")
 
 octave_range = OctaveRangeSelector(octave_section)
 octave_range.canvas.pack(fill="x", pady=(0, 14))
 
-# Grows to take up whatever height the range selector leaves
-octave_display = ctk.CTkFrame(octave_section, height=56, corner_radius=8, border_width=2, border_color=FIELD_BORDER)
-octave_display.pack(fill="both", expand=True)
+octave_display = ctk.CTkFrame(octave_section, height=63.5, corner_radius=8, border_width=2, border_color=FIELD_BORDER)
+octave_display.pack(fill="x")
 octave_display.pack_propagate(False)
 octave_display_label = ctk.CTkLabel(octave_display, text="", font=ctk.CTkFont(size=17, weight="bold"),
                                     fg_color="transparent")
@@ -1075,12 +1115,16 @@ update_octave_display()
 
 # ---------- Start/Stop ----------
 def update_toggle_button():
+    # Show the toggle hotkey, since the hotkeys themselves are tucked away in their own window
+    shortcut = format_key(key_bindings["MIDI Toggle"])
     if midi_mode:
-        toggle_button.configure(text="Stop MIDI", state="normal", fg_color=STOP_RED, hover_color=STOP_RED_HOVER)
+        toggle_button.configure(text=f"Stop MIDI  ({shortcut})", state="normal",
+                                fg_color=STOP_RED, hover_color=STOP_RED_HOVER)
     elif outport is None:
         toggle_button.configure(text="No MIDI port", state="disabled", fg_color=DISABLED)
     else:
-        toggle_button.configure(text="Start MIDI", state="normal", fg_color=MAIN_GREEN, hover_color=MAIN_GREEN_HOVER)
+        toggle_button.configure(text=f"Start MIDI  ({shortcut})", state="normal",
+                                fg_color=MAIN_GREEN, hover_color=MAIN_GREEN_HOVER)
 
 def on_port_changed():
     # Stop playing if the port went away, and only allow starting when a port is open
@@ -1090,7 +1134,7 @@ def on_port_changed():
 
 toggle_button = ctk.CTkButton(content, height=44, font=ctk.CTkFont(size=16, weight="bold"),
                               text_color="#ffffff", text_color_disabled=DISABLED_TEXT, command=toggle_mode)
-toggle_button.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(22, 0))
+toggle_button.grid(row=6, column=0, sticky="ew", pady=(16, 0))
 update_toggle_button()
 
 # ---------- Global Hotkeys ----------
