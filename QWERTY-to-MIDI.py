@@ -11,7 +11,7 @@ import math
 import ctypes
 
 # Also read by QWERTY-to-MIDI.spec for the .exe's version info
-__version__ = "1.0"
+__version__ = "1.1"
 
 # ---------- Load/save key bindings ----------
 def app_dir():

@@ -20,8 +20,8 @@ The controls are modelled on the Guild Wars 2 instrument hotkeys, so they'll fee
 ## Usage
 
 1. Start loopMIDI and create a port.
-2. Download and run `QWERTY-to-MIDI.exe` from the [release](https://github.com/PotatoRhythm/QWERTY-to-MIDI/releases/latest), or run it from source (see below).
-3. Pick your port (click ⟳ if it isn't listed), then press the **MIDI Toggle** key or click **Start MIDI**.
+2. Download and run `QWERTY-to-MIDI.exe` from the [latest release](https://github.com/PotatoRhythm/QWERTY-to-MIDI/releases/latest), or run it from source.
+3. Pick your port, then press the **MIDI Toggle** key or click **Start MIDI**.
 
 ## Running from source
 
